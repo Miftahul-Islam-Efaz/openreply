@@ -1609,6 +1609,11 @@ export function createDMWorker(): Worker<DmQueueJob> {
   const worker = new Worker<DmQueueJob>("dm-processing", processJob, {
     connection: getRedisConnection(),
     concurrency: 5,
+    // Pace sends: Zernio allows 60 req/min on free (<=2 accounts), 600 above.
+    limiter: {
+      max: Number(process.env.DM_WORKER_MAX_PER_MINUTE ?? 30),
+      duration: 60_000,
+    },
     settings: {
       backoffStrategy: (attemptsMade: number) =>
         BACKOFF_DELAYS[Math.min(attemptsMade - 1, BACKOFF_DELAYS.length - 1)],

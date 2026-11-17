@@ -5,12 +5,12 @@ import {
 } from "@/lib/meta/client";
 
 export class ZernioApiError extends MetaApiError {
-  constructor(status: number) {
+  constructor(status: number, detail?: string) {
     super(
       status,
       undefined,
       undefined,
-      `Zernio request failed (HTTP ${status})`
+      `Zernio request failed (HTTP ${status})${detail ? `: ${detail}` : ""}`
     );
     this.name = "ZernioApiError";
   }
@@ -59,7 +59,14 @@ export async function zernioRequest<T>({
     const message = `Zernio request failed (HTTP ${response.status})`;
     if (response.status === 429) throw new RateLimitError(message);
     if (response.status === 401) throw new TokenExpiredError(message);
-    throw new ZernioApiError(response.status);
+    // Keep only a short error/code/message so DM logs say WHY (e.g.
+    // privateReplyConsumed); never the raw body, which can hold credentials.
+    const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+    const pick = (v: unknown) => (typeof v === "string" ? v : "");
+    const detail = [pick(body?.code), pick(body?.error), pick(body?.message),
+      (body?.details as { privateReplyConsumed?: boolean } | undefined)?.privateReplyConsumed ? "privateReplyConsumed" : ""]
+      .filter(Boolean).join(" | ").slice(0, 200);
+    throw new ZernioApiError(response.status, detail || undefined);
   }
   if (response.status === 204) return undefined as T;
   return response.json().catch(() => {
