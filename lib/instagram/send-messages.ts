@@ -11,6 +11,14 @@ type Button =
   | { type: "url"; title: string; url: string }
   | { type: "postback"; title: string; payload: string };
 
+export function isNotThreadOwner(error: unknown) {
+  return (
+    error instanceof ZernioApiError &&
+    error.code === 409 &&
+    /not_thread_owner/.test(error.message)
+  );
+}
+
 async function sendZernioMessage({
   context,
   recipientId,
@@ -43,15 +51,37 @@ async function sendZernioMessage({
       })
     )
     .digest("hex");
-  const result = await zernioRequest<{
-    messageId?: string;
-    data?: { messageId: string };
-  }>({
-    apiKey: context.apiKey,
-    path,
-    method: "POST",
-    body,
-    ...(commentId ? {} : { idempotencyKey }),
+  const send = () =>
+    zernioRequest<{
+      messageId?: string;
+      data?: { messageId: string };
+    }>({
+      apiKey: context.apiKey,
+      path,
+      method: "POST",
+      body,
+      ...(commentId ? {} : { idempotencyKey }),
+    });
+  const result = await send().catch(async (error: unknown) => {
+    // Another app (e.g. a disconnected ManyChat) still owns the thread. Ask
+    // Zernio to release it once so the default app can answer, then retry.
+    if (
+      recipientId &&
+      error instanceof ZernioApiError &&
+      isNotThreadOwner(error)
+    ) {
+      console.warn("[Zernio] 409 not_thread_owner: releasing thread and retrying once");
+      await zernioRequest({
+        apiKey: context.apiKey,
+        path: `/inbox/conversations/${encodeURIComponent(recipientId)}/thread-control`,
+        method: "POST",
+        body: { accountId: context.accountId, action: "release" },
+      }).catch((e) =>
+        console.warn("[Zernio] thread-control release failed:", (e as Error).message)
+      );
+      return send();
+    }
+    throw error;
   }).catch((error: unknown) => {
     // A send may have succeeded upstream before a network/5xx failure. The
     // service releases idempotency claims on non-2xx, so do not auto-resend.
